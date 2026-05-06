@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#ffffff" />
+  <!-- ──────────────────────────────────────────────────────────────────
+       Defense-in-depth security headers via <meta>. The dev server (and
+       any production edge) ALSO sets these as real HTTP headers — this
+       block is a backup so the policy still applies when the file is
+       opened directly (file://) or hosted somewhere that doesn't set
+       proper headers.
+
+       CSP is intentionally strict:
+         • script-src 'self'  →  no inline / no eval / no remote scripts
+         • frame-ancestors    →  defeats clickjacking via iframe embed
+         • object-src 'none'  →  no Flash / Java applets / other plugins
+         • base-uri 'self'    →  no <base> tag injection
+         • img/media include data:/blob: only for canvas + WebAudio
+       'unsafe-inline' is permitted ONLY for style because we keep the
+       boot-splash CSS inline (so it paints before style.css arrives)
+       and a few SVGs use the style="..." attribute. Scripts have NO
+       'unsafe-inline' / 'unsafe-eval' — this is the line that matters
+       for XSS resistance.
+       ────────────────────────────────────────────────────────────── -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';" />
+  <meta name="referrer" content="no-referrer" />
+  <title>箭阵突围 · Arrow Escape</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- Module preload: kick off parallel fetches for ALL JS modules as
+       soon as the HTML is parsed. Without these hints the browser only
+       discovers transitive imports (board.js, renderer.js, levels-data.js,
+       …) after main.js arrives, turning the load into a serial waterfall.
+       With them everything downloads in parallel — saves ~5×RTT on cold
+       cache for the import graph. -->
+  <link rel="modulepreload" href="js/main.js" />
+  <link rel="modulepreload" href="js/game.js" />
+  <link rel="modulepreload" href="js/levels.js" />
+  <link rel="modulepreload" href="js/levels-data.js" />
+  <link rel="modulepreload" href="js/board.js" />
+  <link rel="modulepreload" href="js/arrow.js" />
+  <link rel="modulepreload" href="js/renderer.js" />
+  <link rel="modulepreload" href="js/input.js" />
+  <link rel="modulepreload" href="js/ui.js" />
+  <link rel="modulepreload" href="js/audio.js" />
+  <link rel="modulepreload" href="js/storage.js" />
+  <!-- Inline boot splash CSS so it paints in the FIRST frame, even
+       before style.css lands. Hides itself once the home screen
+       appears (main.js removes the .booting class on DOMContentLoaded). -->
+  <style>
+    html, body { background: #f4f6fb; }
+    .boot-splash {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px;
+      background: linear-gradient(160deg, #fef0d4 0%, #ffe2cc 30%, #cfdfff 70%, #d9e7ff 100%);
+      transition: opacity 0.35s ease;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #5a5a76;
+    }
+    .boot-splash .ring {
+      width: 56px; height: 56px;
+      border-radius: 50%;
+      border: 5px solid rgba(108,140,255,0.18);
+      border-top-color: #6c8cff;
+      animation: bootSpin 0.9s linear infinite;
+    }
+    .boot-splash .label {
+      font-size: 15px; font-weight: 700; letter-spacing: 4px;
+    }
+    @keyframes bootSpin { to { transform: rotate(360deg); } }
+    body:not(.booting) .boot-splash { opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body class="booting">
+  <div class="boot-splash">
+    <div class="ring"></div>
+    <div class="label">箭 头 快 跑</div>
+  </div>
+  <!-- ============================================================ -->
+  <!-- HOME SCREEN — first thing the user sees. Click "开始游戏"      -->
+  <!-- to enter the game. The game module loads in the background    -->
+  <!-- so the transition is instant.                                  -->
+  <!-- ============================================================ -->
+  <div id="homeScreen" class="home-screen">
+    <!-- Floating decorative arrows in the background -->
+    <div class="home-deco">
+      <div class="deco-arrow d1">→</div>
+      <div class="deco-arrow d2">↑</div>
+      <div class="deco-arrow d3">←</div>
+      <div class="deco-arrow d4">↓</div>
+      <div class="deco-arrow d5">→</div>
+      <div class="deco-arrow d6">↑</div>
+    </div>
+
+    <!-- Top status bar: avatar + coins + items + help + settings -->
+    <header class="home-topbar">
+      <div class="user-pill">
+        <div class="user-avatar">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h13M13 6l5 6-5 6"></path>
+          </svg>
+        </div>
+        <div class="user-stats">
+          <div class="stat coin">
+            <span class="coin-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <circle cx="12" cy="12" r="10" fill="#ffc94a" stroke="#c47a14" stroke-width="1.6"/>
+                <circle cx="12" cy="12" r="7"  fill="#ffd970" stroke="#e3a625" stroke-width="0.9"/>
+                <text x="12" y="16" text-anchor="middle" font-size="11" font-weight="900" fill="#7a4500" font-family="-apple-system,Segoe UI,sans-serif">¥</text>
+              </svg>
+            </span>
+            <span class="stat-num" id="homeCoinsTotal">0</span>
+          </div>
+          <div class="stat energy">
+            <span class="stat-icon">⚡</span>
+            <span class="stat-num" id="homeWandCount">1</span>
+            <span class="stat-tag">道具</span>
+          </div>
+        </div>
+      </div>
+      <div class="home-topbar-actions">
+        <button class="home-icon-btn" id="homeHelpBtn" aria-label="玩法说明" title="玩法说明">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#5a5a76" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9.4"></circle>
+            <path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.6-2 1.7-2.5 3M12 17.3v.01"></path>
+          </svg>
+        </button>
+        <button class="home-icon-btn" id="homeSettingsBtn" aria-label="设置">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#5a5a76" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Game logo / title -->
+    <div class="home-logo">
+      <div class="logo-arrows">
+        <span class="logo-arrow la1">→</span>
+        <span class="logo-arrow la2">↗</span>
+        <span class="logo-arrow la3">↑</span>
+      </div>
+      <h1 class="logo-title">
+        <span class="logo-line line-1">箭阵</span>
+        <span class="logo-line line-2">突围</span>
+      </h1>
+      <div class="logo-sub">Arrow Escape</div>
+    </div>
+
+    <!-- Hero illustration. Loaded async + low-priority so it never blocks
+         first paint or competes with the critical JS/CSS bundle. The
+         home screen is fully interactive before this image arrives;
+         the explicit width/height + CSS aspect-ratio reserve layout
+         space so nothing shifts when it loads. -->
+    <div class="home-hero" aria-hidden="true">
+      <img class="home-hero-img"
+           src="assets/arrow-run-hero.jpg"
+           alt=""
+           width="960" height="640"
+           decoding="async"
+           loading="eager"
+           fetchpriority="low" />
+    </div>
+
+    <!-- Start game CTA -->
+    <div class="home-start-wrap">
+      <button class="start-btn" id="homeStartBtn">
+        <span class="start-label">开 始 游 戏</span>
+      </button>
+      <div class="start-sub">第 <span id="homeLevelNum">1</span> 关 · <span id="homeLevelName">点击开始</span></div>
+    </div>
+
+    <!-- Side action buttons (4 floating circles) -->
+    <div class="home-side left">
+      <button class="side-btn" id="homeRankSideBtn" title="排行榜">
+        <span class="side-icon" style="background: linear-gradient(135deg, #ffd66b, #ff8a3d);">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 21h8M12 17v4"></path>
+            <path d="M7 3h10v5a5 5 0 0 1-10 0z"></path>
+            <path d="M5 5H3a2 2 0 0 0 2 4M19 5h2a2 2 0 0 1-2 4"></path>
+          </svg>
+        </span>
+        <span class="side-label">排行榜</span>
+      </button>
+      <button class="side-btn" id="homeLevelsSideBtn" title="关卡">
+        <span class="side-icon" style="background: linear-gradient(135deg, #74e0a3, #2ec27e);">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.2"></rect>
+            <rect x="14" y="3" width="7" height="7" rx="1.2"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1.2"></rect>
+            <rect x="14" y="14" width="7" height="7" rx="1.2"></rect>
+          </svg>
+        </span>
+        <span class="side-label">趣味关卡</span>
+      </button>
+    </div>
+    <div class="home-side right">
+      <button class="side-btn" id="homeDecorSideBtn" title="家园装扮">
+        <span class="side-icon" style="background: linear-gradient(135deg, #b09bff, #7d5cff);">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z"></path>
+          </svg>
+        </span>
+        <span class="side-label">家园</span>
+      </button>
+      <button class="side-btn" id="homeThemeSideBtn" title="主题">
+        <span class="side-icon" style="background: linear-gradient(135deg, #ff89c8, #e8369e);">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"></circle>
+            <circle cx="12" cy="7" r="1.4" fill="#fff"></circle>
+            <circle cx="7.2" cy="11.5" r="1.4" fill="#fff"></circle>
+            <circle cx="9.6" cy="16.6" r="1.4" fill="#fff"></circle>
+            <circle cx="15.5" cy="15.4" r="1.4" fill="#fff"></circle>
+          </svg>
+        </span>
+        <span class="side-label">主题</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="app">
+    <!-- Top HUD -->
+    <header class="hud">
+      <div class="hud-left">
+        <button id="backHomeBtn" class="icon-btn" aria-label="返回主页" title="返回主页">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#3a3a3a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z"></path>
+          </svg>
+        </button>
+        <button id="settingsBtn" class="icon-btn" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#3a3a3a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        </button>
+      </div>
+
+      <div class="center-meta">
+        <div class="level-title" id="levelTitle">第 <span id="levelNum">1</span> 关</div>
+        <div class="hearts" id="hearts"></div>
+      </div>
+
+      <div class="timer">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#3a3a3a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <span id="timerText">15:00</span>
+      </div>
+    </header>
+
+    <!-- Game Canvas -->
+    <main class="stage" id="stage">
+      <canvas id="gameCanvas"></canvas>
+    </main>
+
+    <!-- Bottom controls -->
+    <footer class="controls">
+      <button class="ctrl-btn ready" id="hintBtn" title="提示：闪烁一根可点击的箭头">
+        <span class="btn-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18h6M10 22h4"></path>
+            <path d="M12 2a7 7 0 0 0-4 12.7c1 .9 1.4 1.7 1.5 2.3h5c.1-.6.5-1.4 1.5-2.3A7 7 0 0 0 12 2z"></path>
+          </svg>
+        </span>
+        <span class="btn-label">提示</span>
+        <span class="badge" id="hintBadge">1</span>
+      </button>
+      <button class="ctrl-btn" id="levelSelectBtn" title="关卡">
+        <span class="btn-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.2"></rect>
+            <rect x="14" y="3" width="7" height="7" rx="1.2"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1.2"></rect>
+            <rect x="14" y="14" width="7" height="7" rx="1.2"></rect>
+          </svg>
+        </span>
+        <span class="btn-label">关卡</span>
+      </button>
+      <button class="ctrl-btn ready" id="wandBtn" title="魔法棒：消除任意一个箭头">
+        <span class="btn-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 19l11-11"></path>
+            <path d="M14 6l4 4"></path>
+            <path d="M17 2l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"></path>
+            <path d="M5 14l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"></path>
+          </svg>
+        </span>
+        <span class="btn-label">道具</span>
+        <span class="badge" id="wandBadge">1</span>
+      </button>
+    </footer>
+
+    <!-- Modals -->
+    <div class="modal-mask hidden" id="modalMask">
+      <!-- Win modal -->
+      <div class="modal hidden" id="winModal">
+        <div class="modal-emblem win-emblem">
+          <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        </div>
+        <h2>关卡完成！</h2>
+        <div class="stars" id="winStars">
+          <span class="star">★</span><span class="star">★</span><span class="star">★</span>
+        </div>
+        <p class="win-stats">
+          用时 <b id="winTime">--</b> · 剩余 <b id="winHearts">--</b> 心
+        </p>
+        <div class="coin-reward" id="winCoinReward">
+          <div class="coin-row" id="winStarsRow">
+            <span class="coin-label">星星奖励</span>
+            <span class="coin-value">+ <b id="winCoinsStars">0</b></span>
+          </div>
+          <div class="coin-row" id="winComboRow">
+            <span class="coin-label">连击奖励</span>
+            <span class="coin-value">+ <b id="winCoinsCombo">0</b></span>
+          </div>
+          <div class="coin-row" id="winEventRow">
+            <span class="coin-label">随机金币</span>
+            <span class="coin-value">+ <b id="winCoinsEvent">0</b></span>
+          </div>
+          <div class="coin-row coin-total" id="winTotalRow">
+            <span class="coin-label">本关共获得</span>
+            <span class="coin-value">
+              <span class="coin-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px;">
+                  <circle cx="12" cy="12" r="10" fill="#ffc94a" stroke="#c47a14" stroke-width="1.6"/>
+                  <text x="12" y="16" text-anchor="middle" font-size="11" font-weight="900" fill="#7a4500">¥</text>
+                </svg>
+                <b id="winCoinsTotal">0</b>
+              </span>
+            </span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn ghost" id="winReplay">重玩</button>
+          <button class="btn primary" id="winNext">下一关 →</button>
+        </div>
+      </div>
+
+      <!-- Lose modal -->
+      <div class="modal hidden" id="loseModal">
+        <div class="modal-emblem lose-emblem">
+          <svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </div>
+        <h2 id="loseTitle">挑战失败</h2>
+        <p class="lose-stats" id="loseSub">再来一次试试吧！</p>
+        <div class="modal-actions">
+          <button class="btn ghost" id="loseHome">关卡选择</button>
+          <button class="btn primary" id="loseRetry">重新挑战</button>
+        </div>
+      </div>
+
+      <!-- Settings modal -->
+      <div class="modal hidden" id="settingsModal">
+        <h2>设置</h2>
+        <div class="settings-row">
+          <span>音效</span>
+          <label class="toggle">
+            <input type="checkbox" id="sfxToggle" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <span>震动</span>
+          <label class="toggle">
+            <input type="checkbox" id="vibrateToggle" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="modal-actions single">
+          <button class="btn primary" id="settingsClose">关闭</button>
+        </div>
+      </div>
+
+      <!-- Level Select modal -->
+      <div class="modal wide hidden" id="levelModal">
+        <h2>选择关卡</h2>
+        <div class="level-grid" id="levelGrid"></div>
+        <div class="modal-actions single">
+          <button class="btn ghost" id="levelClose">取消</button>
+        </div>
+      </div>
+
+      <!-- Home modal — future home decoration system entry -->
+      <div class="modal hidden" id="homeModal">
+        <div class="modal-emblem home-emblem">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z"></path>
+          </svg>
+        </div>
+        <h2>我的家园</h2>
+        <p class="modal-sub">装扮你的小屋（即将推出），先来看看排行榜吧！</p>
+        <div class="home-tiles">
+          <button class="home-tile" id="homeRankBtn">
+            <div class="home-tile-icon" style="background: linear-gradient(135deg, #ffd76b, #ff8a4a);">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 21h8M12 17v4"></path>
+                <path d="M7 3h10v5a5 5 0 0 1-10 0z"></path>
+                <path d="M5 5H3a2 2 0 0 0 2 4M19 5h2a2 2 0 0 1-2 4"></path>
+              </svg>
+            </div>
+            <div class="home-tile-text">
+              <b>游戏排行</b>
+              <span>查看通关时间与星星</span>
+            </div>
+          </button>
+          <button class="home-tile locked" disabled>
+            <div class="home-tile-icon" style="background: linear-gradient(135deg, #c2c5cd, #8a8f9c);">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="4" width="16" height="16" rx="3"></rect>
+                <path d="M9 9h6v6H9z"></path>
+              </svg>
+            </div>
+            <div class="home-tile-text">
+              <b>家园装扮</b>
+              <span>敬请期待</span>
+            </div>
+          </button>
+        </div>
+        <div class="modal-actions single">
+          <button class="btn primary" id="homeClose">关闭</button>
+        </div>
+      </div>
+
+      <!-- Leaderboard modal -->
+      <div class="modal wide hidden" id="rankModal">
+        <h2>游戏排行</h2>
+        <p class="modal-sub" id="rankSummary">已通关 0 / 12 关，共 0 颗星</p>
+        <div class="rank-list" id="rankList"></div>
+        <div class="modal-actions single">
+          <button class="btn ghost" id="rankClose">返回</button>
+        </div>
+      </div>
+
+      <!-- 玩法说明 -->
+      <div class="modal wide hidden" id="helpModal">
+        <div class="modal-emblem help-emblem">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.6-2 1.7-2.5 3M12 17.3v.01"></path>
+          </svg>
+        </div>
+        <h2>玩法说明</h2>
+        <ol class="help-list">
+          <li>
+            <span class="help-num">1</span>
+            <div>
+              <b>目标</b>
+              <p>在限定时间内消除迷宫里的 <b>全部箭头</b> 即可过关。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">2</span>
+            <div>
+              <b>怎么消</b>
+              <p>点击一个 <b>正前方没有任何阻挡</b> 的箭头，它会沿着自身轨道滑出屏幕。被其他箭头身体挡住的不能消，会播放"错误"音效。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">3</span>
+            <div>
+              <b>顺序很重要</b>
+              <p>消掉一个箭头会为后面的箭头让路。要观察哪些 <b>可以先动</b>，再决定下一步——选错次序很可能导致后面无路可走。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">4</span>
+            <div>
+              <b>缩放与拖拽</b>
+              <p>双指捏合 / 鼠标滚轮可缩放；单指拖拽 / 鼠标拖拽可平移地图。点不准时先放大，移动速度比阅读速度更重要。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">5</span>
+            <div>
+              <b>失败条件</b>
+              <p>点错被阻挡的箭头：扣 <b>1 颗 ❤</b> 并 <b>−20 秒</b>（首次失误更狠：剩余时间一半 vs 20 秒取大者）。</p>
+              <p><b>无尽模式（Lv 52+）</b>：点错只扣 ❤，<b>不再扣时间</b>——避免高难度叠加双重惩罚。</p>
+              <p>当 ❤ 全部碎裂、倒计时归零，或全场无可点击箭头时，挑战失败。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">6</span>
+            <div>
+              <b>魔法棒 ⚡ 道具</b>
+              <p>每关赠送 <b>1 个</b>。激活后再点任意一根箭头即可 <b>强行消除</b>（无视阻挡），关键时刻破局救场。点空白处可取消激活。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">7</span>
+            <div>
+              <b>提示 💡 道具</b>
+              <p>每关赠送 <b>1 个</b>。点击后系统会闪烁标出 <b>当前可消除的某根箭头</b>。卡关时可以借力，无可点击箭头时不消耗使用次数。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">8</span>
+            <div>
+              <b>连击系统</b>
+              <p>在 <b>0.8 秒</b> 内连续消除多根箭头即触发连击；2 连击起屏幕中央会弹出"N 连击!"。</p>
+              <p>奖励：5 连击 <b>+1 金币</b>，6 连击及以上 <b>每根 +2 金币</b>，单关连击金币上限 <b>5 枚</b>。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">9</span>
+            <div>
+              <b>随机金币事件</b>
+              <p>仅出现在 <b>彩色关卡</b>。游戏过程中可能在某个尚未消除的箭头 <b>必经之路</b> 上闪现 <b>1–5 枚金币</b>，金币会旋转闪光。</p>
+              <p>当玩家点击该箭头时，箭头沿轨道飞出，<b>头部依次扫过金币</b> 时收集（伴随清脆音效），全部计入本关总收益。</p>
+              <p><b>普通关（Lv 1–51）</b>：每关最多 <b>2 次</b>，第 1 次 60% 概率，第 2 次 30%。</p>
+              <p><b>无尽模式（Lv 52+）</b>：每关最多 <b>5 次</b>，第 1 次 60%，后续 4 次各 40%——刷金币更香。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">10</span>
+            <div>
+              <b>星级评定</b>
+              <p><b>3 ★</b> = 零失误（满血通关）</p>
+              <p><b>2 ★</b> = 1 次失误（仅扣 1 颗 ❤）</p>
+              <p><b>1 ★</b> = 2 次及以上失误，但仍通关</p>
+              <p>用时不影响星级——但耗尽则失败。</p>
+              <p style="margin-top:6px; color:#888;"><b>★ 与 ❤ 的区别</b>：关卡列表里的 <b>★</b> 是你这关的<b>历史最佳记录</b>；游戏中的 <b>❤</b> 是<b>本局剩余生命</b>，每次重玩都满血开始。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">11</span>
+            <div>
+              <b>金币奖励</b>
+              <p><b>星星金币</b>：1 ★ = 5、2 ★ = 10、3 ★ = 15。</p>
+              <p><b>连击金币 + 随机金币</b>：见上方第 8、9 条。</p>
+              <p>金币会累积进总余额，未来可用于解锁装扮、道具。</p>
+            </div>
+          </li>
+          <li>
+            <span class="help-num">12</span>
+            <div>
+              <b>重玩奖励规则</b>
+              <p>为防止刷金币：</p>
+              <p>· <b>星星金币</b> 只发放 <b>新增星星</b> 部分（如：上次 2★、本次 3★，奖励 5 金币；本次未提升，奖励 0）。</p>
+              <p>· <b>连击金币</b> 与 <b>随机金币</b> 仅在 <b>首次通关</b> 时发放，重玩不再获得（连击弹窗、音效仍正常显示）。</p>
+            </div>
+          </li>
+        </ol>
+        <div class="modal-actions single">
+          <button class="btn primary" id="helpClose">明白了</button>
+        </div>
+      </div>
+
+      <!-- Generic confirm dialog (used for restart-this-level) -->
+      <div class="modal hidden" id="confirmModal">
+        <h2 id="confirmTitle">重玩本关？</h2>
+        <p class="modal-sub" id="confirmSub">已通过的进度不会受影响</p>
+        <div class="modal-actions">
+          <button class="btn ghost" id="confirmCancel">取消</button>
+          <button class="btn primary" id="confirmOk">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Combo Toast -->
+    <div class="combo-toast" id="comboToast">
+      <span id="comboCount">2</span> 连击!
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

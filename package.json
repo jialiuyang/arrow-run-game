@@ -1,0 +1,15 @@
+{
+  "name": "arrow-run-game",
+  "version": "1.0.0",
+  "description": "箭头快跑 — Arrow Run, an HTML5 chain-elimination puzzle game",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node smoke-test.mjs",
+    "verify-levels": "node verify-levels.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>清除游戏存档 · Arrow Run</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font: 15px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(180deg, #f5f7fb 0%, #e8edf6 100%);
+    color: #2c2c2c;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    width: 100%; max-width: 460px;
+    background: #fff;
+    border-radius: 18px;
+    padding: 30px 28px 24px;
+    box-shadow: 0 12px 40px rgba(20, 30, 60, 0.10);
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 22px; font-weight: 800;
+    color: #2c2c2c;
+  }
+  .lead { color: #6a7088; margin: 0 0 22px; font-size: 14px; }
+
+  .info {
+    background: #f4f6fb;
+    border: 1px solid #e1e6f0;
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-size: 13px; color: #4a5070;
+    margin-bottom: 18px;
+  }
+  .info b { color: #2c2c2c; }
+  .info .key { font-family: ui-monospace, "SF Mono", Consolas, monospace; background: #fff; padding: 1px 6px; border-radius: 4px; border: 1px solid #e1e6f0; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 22px;
+  }
+  .stat {
+    background: #fafbfd;
+    border: 1px solid #e7eaf3;
+    border-radius: 10px;
+    padding: 10px 8px;
+    text-align: center;
+  }
+  .stat .v { font-size: 20px; font-weight: 800; color: #2c2c2c; }
+  .stat .l { font-size: 11px; color: #8a90a8; margin-top: 2px; }
+
+  .row { display: flex; gap: 10px; }
+  .btn {
+    flex: 1;
+    cursor: pointer; user-select: none;
+    border: 0; border-radius: 12px;
+    padding: 14px 14px;
+    font-size: 15px; font-weight: 800;
+    letter-spacing: 0.5px;
+    transition: transform 0.08s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  }
+  .btn.danger {
+    background: linear-gradient(180deg, #ff5e7a, #e83a5a);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(232, 58, 90, 0.30);
+  }
+  .btn.danger:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(232, 58, 90, 0.42); }
+  .btn.danger:active { transform: translateY(1px); }
+  .btn.danger:disabled { opacity: 0.6; cursor: default; transform: none; box-shadow: none; }
+  .btn.ghost {
+    background: transparent;
+    color: #4a5070;
+    border: 1px solid #d8dde9;
+  }
+  .btn.ghost:hover { background: #f4f6fb; }
+
+  .done {
+    background: linear-gradient(180deg, #e9faf0, #d4f4df);
+    border: 1px solid #4dd28b;
+    color: #1a6e3a;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    font-weight: 700;
+    text-align: center;
+    display: none;
+  }
+  .done.show { display: block; }
+  .done a { color: #1a6e3a; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>清除 Arrow Run 游戏存档</h1>
+  <p class="lead">这会清掉本浏览器内本游戏的所有进度（关卡、星星、金币、最佳时间），让你从第 1 关重新开始。</p>
+
+  <div class="info">
+    将清除的 localStorage 键：<span class="key">arrow_run_v1</span>
+    <br>
+    <b>不会</b> 影响：浏览器历史、其他网站数据、Cookie、登录状态。
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="done" id="done">
+    ✅ 存档已清空。<br>
+    <a href="index.html">→ 打开游戏（从第 1 关开始）</a>
+  </div>
+
+  <div class="row">
+    <button class="btn ghost" onclick="location.href='index.html'">取消，回游戏</button>
+    <button class="btn danger" id="resetBtn">清除存档</button>
+  </div>
+</div>
+
+<script>
+const KEY = "arrow_run_v1";
+
+function readSave() {
+  try {
+    const txt = localStorage.getItem(KEY);
+    if (!txt) return null;
+    const w = JSON.parse(txt);
+    const inner = (w && typeof w.d === "string") ? JSON.parse(w.d) : w;
+    return inner;
+  } catch { return null; }
+}
+
+function refreshStats() {
+  const s = readSave();
+  const stats = document.getElementById("stats");
+  if (!s) {
+    stats.innerHTML = `<div class="stat" style="grid-column: 1 / -1;"><div class="v">—</div><div class="l">没有找到存档（可能已清除或从未玩过）</div></div>`;
+    document.getElementById("resetBtn").disabled = true;
+    document.getElementById("resetBtn").textContent = "无存档可清";
+    return;
+  }
+  const cleared = Object.values(s.stars || {}).filter(n => n > 0).length;
+  const totalStars = Object.values(s.stars || {}).reduce((a, n) => a + (n | 0), 0);
+  const coins = (typeof s.coins === "number") ? s.coins : 0;
+  stats.innerHTML = `
+    <div class="stat"><div class="v">${(s.maxUnlocked | 0) + 1}</div><div class="l">已解锁关卡</div></div>
+    <div class="stat"><div class="v">${cleared} 关</div><div class="l">已通关 (${totalStars} ★)</div></div>
+    <div class="stat"><div class="v">${coins}</div><div class="l">金币余额</div></div>
+  `;
+}
+
+document.getElementById("resetBtn").addEventListener("click", () => {
+  // Wipe both the signed save and any legacy unsigned variants.
+  try { localStorage.removeItem(KEY); } catch {}
+  // Belt & suspenders — also wipe sessionStorage in case any flags
+  // exist there (we don't currently use it but cheap to clear).
+  try { sessionStorage.removeItem(KEY); } catch {}
+  document.getElementById("done").classList.add("show");
+  document.getElementById("resetBtn").disabled = true;
+  document.getElementById("resetBtn").textContent = "已清除";
+  refreshStats();
+});
+
+refreshStats();
+</script>
+</body>
+</html>
