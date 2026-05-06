@@ -1,8 +1,8 @@
-![Uploading 1.png…]()
+
 # 箭头快跑 · Arrow Run
 
 > 一眼看懂的消除魔法 — 点击前方无阻挡的箭头，触发多米诺骨牌式连锁消除！
-
+https://github.com/jialiuyang/arrow-run-game/blob/main/22.png
 ## 🎮 玩法说明
 
 1. **目标**：消除关卡中所有的箭头。
